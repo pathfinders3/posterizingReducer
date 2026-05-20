@@ -1,0 +1,523 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <title>클립보드 이미지 색상 수 줄이기 - Median Cut</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      margin: 20px;
+      background: #f5f5f5;
+      color: #222;
+    }
+
+    h1 {
+      font-size: 22px;
+      margin-bottom: 12px;
+    }
+
+    .toolbar {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+      background: white;
+      border: 1px solid #ccc;
+      border-radius: 8px;
+      padding: 12px;
+      margin-bottom: 16px;
+    }
+
+    button, select {
+      font-size: 14px;
+      padding: 6px 10px;
+    }
+
+    .drop-zone {
+      background: white;
+      border: 2px dashed #aaa;
+      border-radius: 10px;
+      min-height: 140px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      margin-bottom: 16px;
+      cursor: pointer;
+    }
+
+    .drop-zone.drag-over {
+      background: #eef6ff;
+      border-color: #3b82f6;
+    }
+
+    .drop-zone p {
+      margin: 0;
+      color: #555;
+    }
+
+    .canvases {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+    }
+
+    .panel {
+      background: white;
+      border: 1px solid #ccc;
+      border-radius: 8px;
+      overflow: hidden;
+    }
+
+    .panel h3 {
+      font-size: 15px;
+      margin: 0;
+      padding: 10px;
+      border-bottom: 1px solid #ddd;
+      background: #fafafa;
+    }
+
+    canvas {
+      display: block;
+      width: 100%;
+      height: auto;
+      image-rendering: pixelated;
+      background: white;
+    }
+
+    .info {
+      padding: 8px 10px;
+      font-size: 13px;
+      color: #555;
+      border-top: 1px solid #ddd;
+    }
+
+    .palette {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      padding: 10px;
+      background: white;
+      border: 1px solid #ccc;
+      border-radius: 8px;
+      margin-top: 16px;
+    }
+
+    .swatch {
+      width: 32px;
+      height: 32px;
+      border: 1px solid #333;
+      border-radius: 4px;
+      box-sizing: border-box;
+    }
+
+    .hidden {
+      display: none;
+    }
+  </style>
+</head>
+<body>
+  <h1>클립보드 이미지 색상 수 줄이기 - Median Cut</h1>
+
+  <div class="toolbar">
+    <button id="pasteBtn">클립보드 이미지 가져오기</button>
+
+    <label>
+      색상 수:
+      <select id="colorCount">
+        <option value="2">2색</option>
+        <option value="4">4색</option>
+        <option value="8" selected>8색</option>
+        <option value="16">16색</option>
+      </select>
+    </label>
+
+    <label>
+      샘플링:
+      <select id="sampleStep">
+        <option value="1">모든 픽셀</option>
+        <option value="2" selected>2픽셀마다</option>
+        <option value="4">4픽셀마다</option>
+        <option value="8">8픽셀마다</option>
+      </select>
+    </label>
+
+    <button id="applyBtn">다시 적용</button>
+    <button id="downloadBtn" class="hidden">결과 저장</button>
+  </div>
+
+  <div id="dropZone" class="drop-zone" tabindex="0">
+    <p><strong>Ctrl+V</strong> 로 이미지를 붙여넣으세요.</p>
+    <p>또는 여기에 이미지 파일을 드래그하세요.</p>
+    <input id="fileInput" type="file" accept="image/*" class="hidden" />
+    <button id="fileBtn">파일 선택</button>
+  </div>
+
+  <div id="resultArea" class="hidden">
+    <div class="canvases">
+      <div class="panel">
+        <h3>원본</h3>
+        <canvas id="srcCanvas"></canvas>
+        <div id="srcInfo" class="info"></div>
+      </div>
+
+      <div class="panel">
+        <h3 id="dstTitle">결과</h3>
+        <canvas id="dstCanvas"></canvas>
+        <div id="dstInfo" class="info"></div>
+      </div>
+    </div>
+
+    <h3>추출된 팔레트</h3>
+    <div id="paletteView" class="palette"></div>
+  </div>
+
+  <script>
+    const srcCanvas = document.getElementById('srcCanvas');
+    const dstCanvas = document.getElementById('dstCanvas');
+    const srcCtx = srcCanvas.getContext('2d');
+    const dstCtx = dstCanvas.getContext('2d');
+
+    const pasteBtn = document.getElementById('pasteBtn');
+    const applyBtn = document.getElementById('applyBtn');
+    const downloadBtn = document.getElementById('downloadBtn');
+    const colorCountSelect = document.getElementById('colorCount');
+    const sampleStepSelect = document.getElementById('sampleStep');
+    const dropZone = document.getElementById('dropZone');
+    const fileInput = document.getElementById('fileInput');
+    const fileBtn = document.getElementById('fileBtn');
+
+    let originalImageData = null;
+
+    function clamp(v) {
+      return Math.max(0, Math.min(255, Math.round(v)));
+    }
+
+    function colorDistanceSq(a, b) {
+      const dr = a[0] - b[0];
+      const dg = a[1] - b[1];
+      const db = a[2] - b[2];
+      return dr * dr + dg * dg + db * db;
+    }
+
+    function averageColor(colors) {
+      let r = 0, g = 0, b = 0, count = 0;
+
+      for (const c of colors) {
+        r += c[0] * c[3];
+        g += c[1] * c[3];
+        b += c[2] * c[3];
+        count += c[3];
+      }
+
+      if (count === 0) return [0, 0, 0];
+      return [clamp(r / count), clamp(g / count), clamp(b / count)];
+    }
+
+    function getChannelRange(colors, channel) {
+      let min = 255;
+      let max = 0;
+
+      for (const c of colors) {
+        if (c[channel] < min) min = c[channel];
+        if (c[channel] > max) max = c[channel];
+      }
+
+      return max - min;
+    }
+
+    function splitBox(colors) {
+      const rRange = getChannelRange(colors, 0);
+      const gRange = getChannelRange(colors, 1);
+      const bRange = getChannelRange(colors, 2);
+
+      let channel = 0;
+      if (gRange >= rRange && gRange >= bRange) channel = 1;
+      else if (bRange >= rRange && bRange >= gRange) channel = 2;
+
+      const sorted = colors.slice().sort((a, b) => a[channel] - b[channel]);
+
+      const totalWeight = sorted.reduce((sum, c) => sum + c[3], 0);
+      const halfWeight = totalWeight / 2;
+      let acc = 0;
+      let splitIndex = 1;
+
+      for (let i = 0; i < sorted.length - 1; i++) {
+        acc += sorted[i][3];
+        if (acc >= halfWeight) {
+          splitIndex = i + 1;
+          break;
+        }
+      }
+
+      return [sorted.slice(0, splitIndex), sorted.slice(splitIndex)];
+    }
+
+    function boxScore(colors) {
+      const rRange = getChannelRange(colors, 0);
+      const gRange = getChannelRange(colors, 1);
+      const bRange = getChannelRange(colors, 2);
+      const weight = colors.reduce((sum, c) => sum + c[3], 0);
+      return (rRange + gRange + bRange) * weight;
+    }
+
+    function extractColors(imageData, sampleStep) {
+      const map = new Map();
+      const data = imageData.data;
+      const width = imageData.width;
+      const height = imageData.height;
+
+      for (let y = 0; y < height; y += sampleStep) {
+        for (let x = 0; x < width; x += sampleStep) {
+          const i = (y * width + x) * 4;
+          const a = data[i + 3];
+          if (a < 128) continue;
+
+          const r = data[i];
+          const g = data[i + 1];
+          const b = data[i + 2];
+          const key = `${r},${g},${b}`;
+          map.set(key, (map.get(key) || 0) + 1);
+        }
+      }
+
+      return [...map.entries()].map(([key, count]) => {
+        const [r, g, b] = key.split(',').map(Number);
+        return [r, g, b, count];
+      });
+    }
+
+    function medianCutPalette(imageData, targetCount, sampleStep) {
+      const colors = extractColors(imageData, sampleStep);
+      if (colors.length === 0) return [[0, 0, 0]];
+
+      let boxes = [colors];
+
+      while (boxes.length < targetCount) {
+        boxes.sort((a, b) => boxScore(b) - boxScore(a));
+        const box = boxes.shift();
+
+        if (!box || box.length <= 1) {
+          if (box) boxes.push(box);
+          break;
+        }
+
+        const [box1, box2] = splitBox(box);
+        if (box1.length > 0) boxes.push(box1);
+        if (box2.length > 0) boxes.push(box2);
+      }
+
+      const palette = boxes.map(averageColor);
+
+      while (palette.length < targetCount) {
+        palette.push(palette[palette.length - 1] || [0, 0, 0]);
+      }
+
+      return palette.slice(0, targetCount);
+    }
+
+    function nearestColor(r, g, b, palette) {
+      let best = palette[0];
+      let bestD = Infinity;
+
+      for (const p of palette) {
+        const d = colorDistanceSq([r, g, b], p);
+        if (d < bestD) {
+          bestD = d;
+          best = p;
+        }
+      }
+
+      return best;
+    }
+
+    function reduceColors(imageData, palette) {
+      const result = new ImageData(imageData.width, imageData.height);
+      const src = imageData.data;
+      const dst = result.data;
+
+      for (let i = 0; i < src.length; i += 4) {
+        const a = src[i + 3];
+
+        if (a < 128) {
+          dst[i] = 0;
+          dst[i + 1] = 0;
+          dst[i + 2] = 0;
+          dst[i + 3] = 0;
+          continue;
+        }
+
+        const [r, g, b] = nearestColor(src[i], src[i + 1], src[i + 2], palette);
+        dst[i] = r;
+        dst[i + 1] = g;
+        dst[i + 2] = b;
+        dst[i + 3] = a;
+      }
+
+      return result;
+    }
+
+    function countUniqueColors(imageData) {
+      const set = new Set();
+      const d = imageData.data;
+
+      for (let i = 0; i < d.length; i += 4) {
+        if (d[i + 3] < 128) continue;
+        set.add(`${d[i]},${d[i + 1]},${d[i + 2]}`);
+      }
+
+      return set.size;
+    }
+
+    function rgbToHex(c) {
+      return '#' + c.map(v => v.toString(16).padStart(2, '0')).join('');
+    }
+
+    function showPalette(palette) {
+      const paletteView = document.getElementById('paletteView');
+      paletteView.innerHTML = '';
+
+      for (const color of palette) {
+        const swatch = document.createElement('div');
+        swatch.className = 'swatch';
+        swatch.style.backgroundColor = `rgb(${color[0]}, ${color[1]}, ${color[2]})`;
+        swatch.title = rgbToHex(color);
+        paletteView.appendChild(swatch);
+      }
+    }
+
+    function applyReduction() {
+      if (!originalImageData) {
+        alert('먼저 이미지를 붙여넣거나 파일을 선택하세요.');
+        return;
+      }
+
+      const targetCount = Number(colorCountSelect.value);
+      const sampleStep = Number(sampleStepSelect.value);
+
+      const palette = medianCutPalette(originalImageData, targetCount, sampleStep);
+      const reduced = reduceColors(originalImageData, palette);
+
+      dstCanvas.width = reduced.width;
+      dstCanvas.height = reduced.height;
+      dstCtx.putImageData(reduced, 0, 0);
+
+      showPalette(palette);
+
+      document.getElementById('dstTitle').textContent = `${targetCount}색 결과 - Median Cut`;
+      document.getElementById('dstInfo').textContent = `실제 색상 수: ${countUniqueColors(reduced)}색`;
+      document.getElementById('downloadBtn').classList.remove('hidden');
+    }
+
+    function loadImageFromBlob(blob) {
+      const url = URL.createObjectURL(blob);
+      const img = new Image();
+
+      img.onload = () => {
+        const MAX_SIZE = 900;
+        let width = img.naturalWidth;
+        let height = img.naturalHeight;
+
+        if (width > MAX_SIZE) {
+          height = Math.round(height * MAX_SIZE / width);
+          width = MAX_SIZE;
+        }
+        if (height > MAX_SIZE) {
+          width = Math.round(width * MAX_SIZE / height);
+          height = MAX_SIZE;
+        }
+
+        srcCanvas.width = width;
+        srcCanvas.height = height;
+        srcCtx.clearRect(0, 0, width, height);
+        srcCtx.drawImage(img, 0, 0, width, height);
+
+        originalImageData = srcCtx.getImageData(0, 0, width, height);
+
+        document.getElementById('srcInfo').textContent = `${width}×${height}px · 원본 색상 수: ${countUniqueColors(originalImageData).toLocaleString()}색`;
+        document.getElementById('resultArea').classList.remove('hidden');
+
+        applyReduction();
+        URL.revokeObjectURL(url);
+      };
+
+      img.src = url;
+    }
+
+    async function pasteFromClipboard() {
+      if (!navigator.clipboard || !navigator.clipboard.read) {
+        alert('이 브라우저에서는 버튼 방식 클립보드 읽기를 지원하지 않을 수 있습니다. Ctrl+V를 사용하세요.');
+        return;
+      }
+
+      try {
+        const items = await navigator.clipboard.read();
+        for (const item of items) {
+          const imageType = item.types.find(type => type.startsWith('image/'));
+          if (imageType) {
+            const blob = await item.getType(imageType);
+            loadImageFromBlob(blob);
+            return;
+          }
+        }
+        alert('클립보드에 이미지가 없습니다.');
+      } catch (err) {
+        console.error(err);
+        alert('클립보드 접근 권한이 필요합니다. Ctrl+V로 붙여넣어 보세요.');
+      }
+    }
+
+    document.addEventListener('paste', event => {
+      const items = event.clipboardData && event.clipboardData.items;
+      if (!items) return;
+
+      for (const item of items) {
+        if (item.type.startsWith('image/')) {
+          const blob = item.getAsFile();
+          loadImageFromBlob(blob);
+          event.preventDefault();
+          return;
+        }
+      }
+    });
+
+    pasteBtn.addEventListener('click', pasteFromClipboard);
+    applyBtn.addEventListener('click', applyReduction);
+    colorCountSelect.addEventListener('change', applyReduction);
+    sampleStepSelect.addEventListener('change', applyReduction);
+
+    fileBtn.addEventListener('click', () => fileInput.click());
+    fileInput.addEventListener('change', event => {
+      const file = event.target.files[0];
+      if (file && file.type.startsWith('image/')) loadImageFromBlob(file);
+    });
+
+    dropZone.addEventListener('dragover', event => {
+      event.preventDefault();
+      dropZone.classList.add('drag-over');
+    });
+
+    dropZone.addEventListener('dragleave', () => {
+      dropZone.classList.remove('drag-over');
+    });
+
+    dropZone.addEventListener('drop', event => {
+      event.preventDefault();
+      dropZone.classList.remove('drag-over');
+
+      const file = event.dataTransfer.files[0];
+      if (file && file.type.startsWith('image/')) loadImageFromBlob(file);
+    });
+
+    downloadBtn.addEventListener('click', () => {
+      if (!dstCanvas.width) return;
+
+      const a = document.createElement('a');
+      a.download = `median_cut_${colorCountSelect.value}_colors.png`;
+      a.href = dstCanvas.toDataURL('image/png');
+      a.click();
+    });
+  </script>
+</body>
+</html>
