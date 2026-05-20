@@ -112,6 +112,68 @@
       box-sizing: border-box;
     }
 
+    .swatch.fixed {
+      border: 3px solid #ff6b6b;
+      box-shadow: 0 0 0 2px white, 0 0 0 3px #ff6b6b;
+    }
+
+    .fixed-colors {
+      display: flex;
+      gap: 6px;
+      padding: 10px;
+      background: #fff9f9;
+      border: 1px solid #ffc9c9;
+      border-radius: 8px;
+      margin-bottom: 10px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+
+    .fixed-colors label {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 13px;
+    }
+
+    #fixedColorInput {
+      width: 50px;
+      height: 32px;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+
+    .fixed-swatch {
+      width: 24px;
+      height: 24px;
+      border: 2px solid #666;
+      border-radius: 3px;
+      display: inline-block;
+      margin: 0 4px;
+      position: relative;
+    }
+
+    .fixed-swatch .remove {
+      position: absolute;
+      top: -8px;
+      right: -8px;
+      width: 16px;
+      height: 16px;
+      background: #ff6b6b;
+      border-radius: 50%;
+      color: white;
+      font-size: 12px;
+      line-height: 16px;
+      text-align: center;
+      cursor: pointer;
+      display: none;
+    }
+
+    .fixed-swatch:hover .remove {
+      display: block;
+    }
+
     .hidden {
       display: none;
     }
@@ -148,6 +210,15 @@
 
     <button id="applyBtn">다시 적용</button>
     <button id="downloadBtn" class="hidden">결과 저장</button>
+  </div>
+
+  <div class="fixed-colors">
+    <strong>고정 색상 (반드시 포함):</strong>
+    <label>
+      <input type="color" id="fixedColorInput" value="#ff0000" />
+      <button id="addFixedColorBtn">추가</button>
+    </label>
+    <div id="fixedColorsList"></div>
   </div>
 
   <div id="dropZone" class="drop-zone" tabindex="0">
@@ -192,6 +263,51 @@
     const fileBtn = document.getElementById('fileBtn');
 
     let originalImageData = null;
+    let fixedColors = [];
+
+    function hexToRgb(hex) {
+      const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+      return result ? [
+        parseInt(result[1], 16),
+        parseInt(result[2], 16),
+        parseInt(result[3], 16)
+      ] : [0, 0, 0];
+    }
+
+    function addFixedColor(hex) {
+      const rgb = hexToRgb(hex);
+      const key = `${rgb[0]},${rgb[1]},${rgb[2]}`;
+      if (!fixedColors.some(c => `${c[0]},${c[1]},${c[2]}` === key)) {
+        fixedColors.push(rgb);
+        updateFixedColorsList();
+        applyReduction();
+      }
+    }
+
+    function removeFixedColor(index) {
+      fixedColors.splice(index, 1);
+      updateFixedColorsList();
+      applyReduction();
+    }
+
+    function updateFixedColorsList() {
+      const list = document.getElementById('fixedColorsList');
+      list.innerHTML = '';
+      fixedColors.forEach((color, index) => {
+        const swatch = document.createElement('div');
+        swatch.className = 'fixed-swatch';
+        swatch.style.backgroundColor = `rgb(${color[0]}, ${color[1]}, ${color[2]})`;
+        swatch.title = rgbToHex(color);
+        
+        const removeBtn = document.createElement('div');
+        removeBtn.className = 'remove';
+        removeBtn.textContent = '×';
+        removeBtn.onclick = () => removeFixedColor(index);
+        
+        swatch.appendChild(removeBtn);
+        list.appendChild(swatch);
+      });
+    }
 
     function clamp(v) {
       return Math.max(0, Math.min(255, Math.round(v)));
@@ -295,9 +411,12 @@
       const colors = extractColors(imageData, sampleStep);
       if (colors.length === 0) return [[0, 0, 0]];
 
+      // 고정 색상 개수만큼 감소
+      const adjustedTargetCount = Math.max(1, targetCount - fixedColors.length);
+      
       let boxes = [colors];
 
-      while (boxes.length < targetCount) {
+      while (boxes.length < adjustedTargetCount) {
         boxes.sort((a, b) => boxScore(b) - boxScore(a));
         const box = boxes.shift();
 
@@ -313,11 +432,14 @@
 
       const palette = boxes.map(averageColor);
 
-      while (palette.length < targetCount) {
+      while (palette.length < adjustedTargetCount) {
         palette.push(palette[palette.length - 1] || [0, 0, 0]);
       }
 
-      return palette.slice(0, targetCount);
+      // 고정 색상을 맨 앞에 추가
+      const finalPalette = [...fixedColors, ...palette.slice(0, adjustedTargetCount)];
+
+      return finalPalette.slice(0, targetCount);
     }
 
     function nearestColor(r, g, b, palette) {
@@ -381,9 +503,16 @@
       const paletteView = document.getElementById('paletteView');
       paletteView.innerHTML = '';
 
-      for (const color of palette) {
+      for (let i = 0; i < palette.length; i++) {
+        const color = palette[i];
         const swatch = document.createElement('div');
         swatch.className = 'swatch';
+        
+        // 고정 색상인지 확인
+        if (i < fixedColors.length) {
+          swatch.classList.add('fixed');
+        }
+        
         swatch.style.backgroundColor = `rgb(${color[0]}, ${color[1]}, ${color[2]})`;
         swatch.title = rgbToHex(color);
         paletteView.appendChild(swatch);
@@ -489,6 +618,15 @@
     applyBtn.addEventListener('click', applyReduction);
     colorCountSelect.addEventListener('change', applyReduction);
     sampleStepSelect.addEventListener('change', applyReduction);
+    
+    document.getElementById('addFixedColorBtn').addEventListener('click', () => {
+      const hex = document.getElementById('fixedColorInput').value;
+      addFixedColor(hex);
+    });
+    
+    document.getElementById('fixedColorInput').addEventListener('change', (e) => {
+      document.getElementById('fixedColorInput').value = e.target.value;
+    });
 
     fileBtn.addEventListener('click', () => fileInput.click());
     fileInput.addEventListener('change', event => {
